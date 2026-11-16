@@ -2,6 +2,7 @@
 --   local dll = import("lib.dll")
 --   local h = dll.load("example", "1")   -- dll repo file: example/1/example.dll
 --   local fn = dll.proc(h, "start", "int(*)(void)")
+--   dll.free(h)                          -- on shutdown
 -- Each version is cached as astral\lua\astral_dlls\<name>-<version>.dll, so a loaded DLL
 -- is never overwritten: bump the version to ship a new build.
 
@@ -13,6 +14,7 @@ local FOLDER = "astral_dlls"
 local K = {}
 for name, sig in pairs({
     LoadLibraryA = "void*(*)(const char*)",
+    FreeLibrary = "int(*)(void*)",
     GetProcAddress = "void*(*)(void*, const char*)",
     GetModuleFileNameA = "unsigned long(*)(void*, char*, unsigned long)",
 }) do
@@ -29,8 +31,8 @@ do
     download = ffi.cast("long(*)(void*, const char*, const char*, unsigned long, void*)", a)
 end
 
-local lua_dir
-do
+local lua_dir = rawget(_G, "ASTRAL_LUA_DIR")  -- (the offline test's folder)
+if not lua_dir then
     local buffer = ffi.new("char[1024]")
     local n = tonumber(K.GetModuleFileNameA(nil, buffer, 1024))
     local root = ffi.string(buffer, n):match("^(.*)\\game\\bin\\win64\\[^\\]+$")
@@ -60,5 +62,7 @@ function M.proc(h, export, sig)
     if a == nil then error("missing export " .. export, 0) end
     return ffi.cast(sig, a)
 end
+
+function M.free(h) K.FreeLibrary(h) end
 
 return M
