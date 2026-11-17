@@ -13,7 +13,7 @@
 local ffi = require("ffi")
 local dll = import("lib.dll")
 
-local MENU_VERSION = "10"
+local MENU_VERSION = "11"
 
 local M = {pages = {}}
 local next_slot, D, started = 0, nil, false
@@ -143,6 +143,7 @@ function M.start()
         schema = dll.proc(h, "alm_schema", "void(*)(const char*)"),
         get = dll.proc(h, "alm_get", "double(*)(int)"),
         set = dll.proc(h, "alm_set", "void(*)(int, double)"),
+        user = dll.proc(h, "alm_user", "void(*)(const char*)"),
         state = dll.proc(h, "alm_state", "void(*)(int, int, int, int)"),
         shutdown = dll.proc(h, "alm_shutdown", "void(*)(void)"),
     }
@@ -151,6 +152,8 @@ function M.start()
         error("menu.dll couldn't hook the game's renderer", 0)
     end
     D.schema(schema())
+    local okn, name = pcall(utils.get_username)
+    if okn and type(name) == "string" and name ~= "" then D.user(name) end  -- the footer: Steam avatar + Astral username
     started = true
 
     local r, g, b, at = -1, -1, -1, -1
