@@ -13,7 +13,7 @@
 local ffi = require("ffi")
 local dll = import("lib.dll")
 
-local MENU_VERSION = "12"
+local MENU_VERSION = "13"
 
 local M = {pages = {}}
 local next_slot, D, started = 0, nil, false
@@ -126,6 +126,21 @@ local function schema()
     return table.concat(out, "\n")
 end
 
+-- Astral's "Render scale" (Config > Windows): 1 = 100%
+local function astral_scale()
+    local ok, el = pcall(ui.reference, "Config, Windows, Render scale")
+    if not ok or not el then return 1 end
+    local okv, v = pcall(function() return el:get() end)
+    if okv and type(v) == "string" then
+        local pct = tonumber(v:match("(%d+)"))
+        if pct and pct >= 50 and pct <= 200 then return pct / 100 end
+    elseif okv and type(v) == "number" then
+        local steps = {0.75, 1, 1.25, 1.5}  -- the dropdown's order when it hands back an index
+        return steps[math.floor(v) + 1] or 1
+    end
+    return 1
+end
+
 local function accent()
     local ok, c = pcall(function() return theme:get_accent() end)
     if not ok or not c then ok, c = pcall(function() return theme.get_accent() end) end
@@ -144,9 +159,11 @@ function M.start()
         get = dll.proc(h, "alm_get", "double(*)(int)"),
         set = dll.proc(h, "alm_set", "void(*)(int, double)"),
         user = dll.proc(h, "alm_user", "void(*)(const char*)"),
+        scale = dll.proc(h, "alm_scale", "void(*)(float)"),
         state = dll.proc(h, "alm_state", "void(*)(int, int, int, int)"),
         shutdown = dll.proc(h, "alm_shutdown", "void(*)(void)"),
     }
+    D.scale(astral_scale())  -- drawn at Astral's own size
     if D.init() == 0 then
         dll.free(h)
         error("menu.dll couldn't hook the game's renderer", 0)
