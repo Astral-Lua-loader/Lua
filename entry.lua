@@ -7,5 +7,6 @@ local menu = import("ui.menu")
 import("rage")
 import("visuals")
 import("misc")
+import("scripts")  -- astral.rip scripts from the private Scripts repo (needs astral_loader_token.txt)
 
 menu.start()
