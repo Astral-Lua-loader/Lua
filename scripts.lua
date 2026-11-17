@@ -1,5 +1,5 @@
--- scripts.lua: the Scripts page. One checkbox per astral.rip script from the private Scripts repo (lib/hub.lua);
--- ticking one downloads and runs it the first time, unticking pauses it and hides its menu items, ticking again resumes.
+-- scripts.lua: the Scripts page. A searchable list of the astral.rip scripts from the private Scripts repo (lib/hub.lua);
+-- switching one on downloads and runs it the first time, off pauses it and hides its menu items, on again resumes.
 
 local menu = import("ui.menu")
 local hub = import("lib.hub")
@@ -12,16 +12,19 @@ if not list then
     return
 end
 
--- two columns, in index order (sorted by title)
-local half = math.ceil(#list / 2)
-local left, right = page:group("Scripts", 0), page:group("More scripts", 1)
-local boxes = {}
-for i, e in ipairs(list) do
-    local label = (e.title:gsub("%s+", " ")):sub(1, 34) .. " - " .. e.author
-    boxes[#boxes + 1] = {id = e.id, box = (i <= half and left or right):checkbox(label, false)}
-end
+local items = {}
+for i, e in ipairs(list) do items[i] = {(e.title:gsub("%s+", " ")), e.author} end
+local scripts = page:group("Scripts", 0):list("Scripts", items, 380)
+page:group("Script", 1):info(scripts)
 loader.log(("%d astral.rip scripts in the Scripts page"):format(#list))
 
 callbacks.add("render", function()
-    for _, b in ipairs(boxes) do hub.set(b.id, b.box:get()) end
+    for i, e in ipairs(list) do
+        local st = scripts:state(i)
+        if st ~= 2 then
+            hub.set(e.id, st == 1)
+            if st == 1 and hub.state(e.id) == "failed" then scripts:set_state(i, 2) end
+        end
+    end
 end)
+if type(rawget(_G, "LOADER_TEST")) == "table" then LOADER_TEST.scripts = {list = scripts, entries = list} end

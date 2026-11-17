@@ -13,12 +13,12 @@
 local ffi = require("ffi")
 local dll = import("lib.dll")
 
-local MENU_VERSION = "4"
+local MENU_VERSION = "5"
 
 local M = {pages = {}}
 local next_slot, D, started = 0, nil, false
 
-local function clean(s) return (tostring(s):gsub("[\t\r\n|]", " ")) end
+local function clean(s) return (tostring(s):gsub("[\t\r\n|%^]", " ")) end
 
 local function control(kind, def)
     local c = {slot = next_slot, default = def}
@@ -64,6 +64,27 @@ function Group:combo(name, options, default)
     local opts = {}
     for i, o in ipairs(options) do opts[i] = clean(o) end
     return self:add("combo", c, {default - 1, table.concat(opts, "|")})
+end
+
+-- a searchable list (Astral's script list): items {{title, author}, ...}; each item is on/off by its circle
+--   l:selected() -> 1-based or nil   l:state(i) -> 0 off, 1 on, 2 failed   l:set_state(i, v)
+function Group:list(name, items, height)
+    local c = control("list", nil)
+    c.name, c.items = name, items
+    next_slot = next_slot + #items
+    c.selected = function() local v = started and D.get(c.slot); return v and v >= 0 and math.floor(v + 0.5) + 1 or nil end
+    c.state = function(_, i) return started and math.floor(D.get(c.slot + i) + 0.5) or 0 end
+    c.set_state = function(_, i, v) if started then D.set(c.slot + i, v) end end
+    local parts = {}
+    for i, it in ipairs(items) do parts[i] = clean(it[1]) .. "^" .. clean(it[2] or "") end
+    return self:add("list", c, {height or 380, table.concat(parts, "|")})
+end
+
+-- the selected item of a list, with a button to switch it
+function Group:info(list)
+    local c = control("info", 0)
+    c.name = "Info"
+    return self:add("info", c, {list.slot})
 end
 
 local Page = {}
@@ -121,6 +142,7 @@ function M.start()
         init = dll.proc(h, "alm_init", "int(*)(void)"),
         schema = dll.proc(h, "alm_schema", "void(*)(const char*)"),
         get = dll.proc(h, "alm_get", "double(*)(int)"),
+        set = dll.proc(h, "alm_set", "void(*)(int, double)"),
         state = dll.proc(h, "alm_state", "void(*)(int, int, int, int)"),
         shutdown = dll.proc(h, "alm_shutdown", "void(*)(void)"),
     }
