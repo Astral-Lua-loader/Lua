@@ -16,7 +16,7 @@ local test = rawget(_G, "LOADER_TEST")
 hub.preload(type(test) == "table" and test.no_preload or nil)  -- now: Astral only allows elements and fonts while we initialise
 
 local items = {}
-for i, e in ipairs(list) do items[i] = {(e.title:gsub("%s+", " ")), e.author} end
+for i, e in ipairs(list) do items[i] = {hub.title(e), e.author} end
 local scripts = page:group("Scripts", 0):list("Scripts", items, 380)
 page:group("Script", 1):info(scripts)
 loader.log(("%d astral.rip scripts in the Scripts page"):format(#list))

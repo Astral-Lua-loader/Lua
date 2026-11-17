@@ -172,6 +172,10 @@ local function run(entry)
         state.failed, state.on = tostring(rerr), false
         cb.unload(entry.id)  -- whatever it set up before failing is undone
         show(state.elements, false)
+        if tostring(rerr):find("during initialization", 1, true) then
+            state.pending = true  -- stays switched on (saved), set up at the next load
+            return loader.log(("script %s: Astral only lets scripts make menu items while loading - it stays switched on, reload the loader to load it"):format(entry.id))
+        end
         return loader.log(("script %s failed: %s"):format(entry.id, tostring(rerr)))
     end
 end
@@ -206,15 +210,39 @@ end
 
 -- every script, now (while the loader initialises: the only time Astral lets them make elements and fonts). The ones
 -- that are switched off get unloaded on the first frame (hub.set(id, false)), their elements hidden.
+-- the scripts switched on in the Scripts page last time (the menu DLL keeps them in astral_dlls\menu.cfg as
+-- "Scripts/Scripts/Scripts/<title>\t1"), by title as the page shows it
+local function saved_on()
+    local on = {}
+    local okr, text = pcall(utils.read_file, "astral_dlls\\menu.cfg")
+    if not okr or type(text) ~= "string" then return on end
+    for title, v in text:gmatch("Scripts/Scripts/Scripts/([^\t\r\n]+)\t([%d%.]+)") do
+        if tonumber(v) == 1 then on[title] = true end
+    end
+    return on
+end
+
+-- a script that reaches native code (FFI: patches, hooks, raw memory): what it leaves behind outlives a reload of
+-- the loader, so it is only set up while switched on
+local function native(src) return src:find("ffi", 1, true) ~= nil or src:find("hooks.", 1, true) ~= nil end
+
+function M.title(e) return ((e.title:gsub("%s+", " ")):gsub("[\t\r\n|%^]", " ")) end
+
 function M.preload(skip)
-    local ok, failed = 0, 0
+    local on = saved_on()
+    local ok, failed, later = 0, 0, 0
     for _, e in ipairs(index or {}) do
-        if not (skip and skip[e.id]) then
+        local src = bundle and bundle[e.id]
+        if skip and skip[e.id] then
+            later = later + 1
+        elseif src and native(src) and not on[M.title(e)] then
+            later = later + 1  -- switched off: not touched; switching it on asks for a reload (it's set up then)
+        else
             run(e)
             if running[e.id].failed then failed = failed + 1 else ok = ok + 1 end
         end
     end
-    loader.log(("scripts set up: %d, failed: %d"):format(ok, failed))
+    loader.log(("scripts set up: %d, failed: %d, native ones left off until switched on: %d"):format(ok, failed, later))
 end
 
 function M.set(id, on)
@@ -227,6 +255,7 @@ function M.set(id, on)
         return
     end
     if state.on == on then return end
+    if state.pending then return end
     if on then return run(entry) end  -- fresh, as when Astral loads it (a failed one gets another try)
     state.on = false
     cb.unload(id)  -- its shutdown callbacks undo what it changed, then its callbacks and events go
@@ -235,7 +264,7 @@ end
 
 function M.state(id)
     local s = running[id]
-    return s and (s.failed and "failed" or s.on and "on" or "off") or "not loaded"
+    return s and (s.pending and "pending" or s.failed and "failed" or s.on and "on" or "off") or "not loaded"
 end
 
 if type(rawget(_G, "LOADER_TEST")) == "table" then LOADER_TEST.hub = M end  -- the offline test's handle
