@@ -8,7 +8,7 @@ local list, why = hub.list()
 local page = menu.page("Scripts")
 if not list then
     loader.log(why)
-    page:group("Scripts"):checkbox("(" .. why .. ")", false)
+    page:group("Scripts"):checkbox("Couldn't load the scripts" .. (why:match("%((HTTP %d+)%)") and " (" .. why:match("%((HTTP %d+)%)") .. ")" or ""), false)
     return
 end
 
