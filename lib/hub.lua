@@ -59,6 +59,13 @@ local function pack(...) return {n = select("#", ...), ...} end
 -- Astral lets a script create menu elements, fonts and images only while it initialises. Everything here runs inside
 -- the loader, so every script is run once while the loader initialises (M.preload) and a later run (switched back on)
 -- gets back what it made then: elements by container + kind + name, render resources by their arguments.
+-- a control a script references that this Astral version doesn't have (renamed / removed): a harmless stand-in
+-- (reads false, ignores writes) so the rest of the script still works
+local function missing_control()
+    local noop = function() end
+    return setmetatable({get = function() return false end}, {__index = function() return noop end})
+end
+
 local function ui_for(state)
     local wrap, container
     local function track(key, make)
@@ -95,6 +102,12 @@ local function ui_for(state)
     wrap = function(el, key) return setmetatable({}, {__index = methods(el, key)}) end
     container = function(real, key) return setmetatable({}, {__index = methods(real, key)}) end
     return setmetatable({
+        reference = function(path, ...)
+            local ok, r = pcall(ui.reference, path, ...)
+            if ok then return r end
+            loader.log(("script %s: Astral has no \"%s\" any more, that part does nothing"):format(state.id, tostring(path)))
+            return missing_control()
+        end,
         find_container = function(...)
             local c = ui.find_container(...)
             local parts = {}
@@ -127,7 +140,19 @@ local function render_for(state)
                 end
                 local key = table.concat(parts, "\31")
                 local hit = state.res[key]
-                if not hit then hit = pack(v(...)); state.res[key] = hit end
+                if not hit then
+                    local args = pack(...)
+                    local ok, r = pcall(function() return pack(v(unpack(args, 1, args.n))) end)
+                    if not ok and k == "create_font" and type(args[1]) == "string" and args[1]:find("[/\\]") then
+                        -- a font file that isn't installed here: Verdana at the same size instead
+                        loader.log(("script %s: font %s isn't installed, using Verdana"):format(state.id, args[1]))
+                        args[1] = "C:\\Windows\\Fonts\\verdana.ttf"
+                        ok, r = pcall(function() return pack(v(unpack(args, 1, args.n))) end)
+                    end
+                    if not ok then error(r, 2) end
+                    hit = r
+                    state.res[key] = hit
+                end
                 return unpack(hit, 1, hit.n)
             end
         end
@@ -142,7 +167,7 @@ end
 local bundle  -- id -> source, the whole Scripts repo in one download (bundle.json, tools/bundle.py there)
 
 local function run(entry)
-    local state = running[entry.id] or {reuse = {}, res = {}}
+    local state = running[entry.id] or {reuse = {}, res = {}, id = entry.id}
     running[entry.id] = state
     state.elements, state.on, state.failed = {}, true, nil
     local src, err = bundle and bundle[entry.id], nil
