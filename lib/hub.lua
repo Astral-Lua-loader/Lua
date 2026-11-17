@@ -1,6 +1,7 @@
 -- lib/hub.lua: astral.rip scripts through the loader. They live in the private repo Astral-Lua-loader/Scripts
--- (index.json + scripts/<id>.lua), read with a read-only token kept next to the loader in astral_loader_token.txt
--- (never in this public repo). Each script runs in its own sandbox:
+-- (index.json + scripts/<id>.lua), read with a read-only token: the one sealed (scrambled) into loader.lua by
+-- tools/seal_token.py, or astral_loader_token.txt next to the loader (overrides it). Never in this repo. Each script
+-- runs in its own sandbox:
 --   callbacks / events  -> its own owner in lib/callbacks (one real Astral callback per event for everyone)
 --   ui                  -> the same Astral ui, but every element it creates is recorded
 --   require("json"/"base64"/"msgpack") -> the libraries from the Scripts repo
@@ -118,9 +119,9 @@ end
 function M.list()
     if index then return index end
     if why then return nil, why end
-    token = read_token()
+    token = read_token() or loader.scripts_token  -- the file overrides the one sealed into the loader
     if not token then
-        why = "no " .. TOKEN_FILE .. " next to the loader: the Scripts page is empty"
+        why = "no Scripts token (none sealed into the loader, no " .. TOKEN_FILE .. "): the Scripts page is empty"
         return nil, why
     end
     local text, err = fetch("index.json")
