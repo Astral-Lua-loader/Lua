@@ -13,7 +13,7 @@
 local ffi = require("ffi")
 local dll = import("lib.dll")
 
-local MENU_VERSION = "9"
+local MENU_VERSION = "10"
 
 local M = {pages = {}}
 local next_slot, D, started = 0, nil, false
