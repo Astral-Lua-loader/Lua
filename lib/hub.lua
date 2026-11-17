@@ -35,7 +35,6 @@ local function fetch(path)
     local ok, r = pcall(http.get, "https://api.github.com/repos/" .. REPO .. "/contents/" .. path .. "?ref=main", {
         ["Authorization"] = "Bearer " .. token,
         ["Accept"] = "application/vnd.github.raw",
-        ["User-Agent"] = "astral-lua-loader",
         ["X-GitHub-Api-Version"] = "2022-11-28",
     })
     if not ok or not r then return nil, tostring(r) end
