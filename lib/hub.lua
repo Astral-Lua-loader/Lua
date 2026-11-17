@@ -5,8 +5,9 @@
 --   callbacks / events  -> its own owner in lib/callbacks (one real Astral callback per event for everyone)
 --   ui                  -> the same Astral ui, but every element it creates is recorded
 --   require("json"/"base64"/"msgpack") -> the libraries from the Scripts repo
--- Switching a script off unloads it the way Astral does (its shutdown callbacks run, its callbacks and events go) and
--- hides its menu elements; on again runs it fresh, getting its old elements back (Astral can't delete elements).
+-- Every script is run while the loader initialises (hub.preload): Astral only allows elements and fonts then. Off
+-- unloads a script the way Astral does (its shutdown callbacks run, its callbacks and events go) and hides its menu
+-- elements; on again runs it fresh, getting back the elements and render resources it made the first time.
 --
 --   local hub = import("lib.hub")
 --   hub.list()        -> the scripts (id, title, author, thread), nil + why when there is no token / no index
@@ -52,9 +53,14 @@ local function library(name)
     return libs[name]
 end
 
--- the sandbox's ui: Astral's, with every element a script adds (on a container or on ui itself) recorded. Astral can't
--- delete elements, so a re-run gets back the element it made last time (same container, kind, name) instead of a copy.
+local unpack = table.unpack or unpack
+local function pack(...) return {n = select("#", ...), ...} end
+
+-- Astral lets a script create menu elements, fonts and images only while it initialises. Everything here runs inside
+-- the loader, so every script is run once while the loader initialises (M.preload) and a later run (switched back on)
+-- gets back what it made then: elements by container + kind + name, render resources by their arguments.
 local function ui_for(state)
+    local wrap, container
     local function track(key, make)
         local el = state.reuse[key]
         if el ~= nil then
@@ -65,21 +71,29 @@ local function ui_for(state)
             state.reuse[key] = el
         end
         state.elements[#state.elements + 1] = el
-        return el
+        return wrap(el, key)
     end
-    local function container(real, ckey)
-        return setmetatable({}, {__index = function(_, k)
+    local function methods(real, key)  -- real's methods; its add_* tracked under key
+        return function(_, k)
             local v = real[k]
             if type(v) ~= "function" then return v end
             if tostring(k):find("^add_") then
                 return function(_, ...)
-                    local args = {...}
-                    return track(ckey .. "|" .. k .. "|" .. tostring(args[1]), function() return v(real, (table.unpack or unpack)(args)) end)
+                    local args = pack(...)
+                    local sub = key .. "|" .. k .. "|" .. tostring(args[1])
+                    if k == "add_popup" then  -- a container: its rows are tracked, it hides with its parent
+                        local c = state.reuse[sub]
+                        if c == nil then c = v(real, unpack(args, 1, args.n)); state.reuse[sub] = c end
+                        return c ~= nil and container(c, sub) or c
+                    end
+                    return track(sub, function() return v(real, unpack(args, 1, args.n)) end)
                 end
             end
             return function(_, ...) return v(real, ...) end
-        end})
+        end
     end
+    wrap = function(el, key) return setmetatable({}, {__index = methods(el, key)}) end
+    container = function(real, key) return setmetatable({}, {__index = methods(real, key)}) end
     return setmetatable({
         find_container = function(...)
             local c = ui.find_container(...)
@@ -91,8 +105,30 @@ local function ui_for(state)
         local v = ui[k]
         if type(v) == "function" and tostring(k):find("^add_") then
             return function(...)
-                local args = {...}
-                return track("ui|" .. k .. "|" .. tostring(args[1]), function() return v((table.unpack or unpack)(args)) end)
+                local args = pack(...)
+                return track("ui|" .. k .. "|" .. tostring(args[1]), function() return v(unpack(args, 1, args.n)) end)
+            end
+        end
+        return v
+    end})
+end
+
+local function render_for(state)
+    local real = render
+    return setmetatable({}, {__index = function(_, k)
+        local v = real[k]
+        if type(v) == "function" and (tostring(k):find("^create_") or k == "load_engine_image") then
+            return function(...)
+                local parts = {k}
+                for i = 1, select("#", ...) do
+                    local a = select(i, ...)
+                    if type(a) == "string" and #a > 96 then a = #a .. ":" .. a:sub(1, 48) .. a:sub(-48) end
+                    parts[#parts + 1] = tostring(a)
+                end
+                local key = table.concat(parts, "\31")
+                local hit = state.res[key]
+                if not hit then hit = pack(v(...)); state.res[key] = hit end
+                return unpack(hit, 1, hit.n)
             end
         end
         return v
@@ -103,11 +139,14 @@ local function show(elements, on)
     for _, el in ipairs(elements) do pcall(function() el:set_visibility(on) end) end
 end
 
+local bundle  -- id -> source, the whole Scripts repo in one download (bundle.json, tools/bundle.py there)
+
 local function run(entry)
-    local state = running[entry.id] or {reuse = {}}
+    local state = running[entry.id] or {reuse = {}, res = {}}
     running[entry.id] = state
     state.elements, state.on, state.failed = {}, true, nil
-    local src, err = fetch("scripts/" .. entry.id .. ".lua")
+    local src, err = bundle and bundle[entry.id], nil
+    if not src then src, err = fetch("scripts/" .. entry.id .. ".lua") end
     if not src then
         state.failed, state.on = err, false
         return loader.log(("script %s: can't download (%s)"):format(entry.id, err))
@@ -117,6 +156,7 @@ local function run(entry)
     env.callbacks = cb.callbacks_for(entry.id)
     env.events = cb.events_for(entry.id)
     env.ui = ui_for(state)
+    env.render = render_for(state)
     env.require = function(name)
         if LIBRARIES[name] then return library(name) end
         return require(name)
@@ -134,7 +174,6 @@ local function run(entry)
         show(state.elements, false)
         return loader.log(("script %s failed: %s"):format(entry.id, tostring(rerr)))
     end
-    loader.log(("script %s loaded (%s, by %s)"):format(entry.id, entry.title, entry.author))
 end
 
 function M.list()
@@ -159,7 +198,23 @@ function M.list()
     for _, e in ipairs(list) do
         if e.kind ~= "library" and type(e.id) == "string" then index[#index + 1] = e end
     end
+    local btext = fetch("bundle.json")
+    local bok, b = pcall(function() return btext and library("json").decode(btext) end)
+    if bok and type(b) == "table" then bundle = b end
     return index
+end
+
+-- every script, now (while the loader initialises: the only time Astral lets them make elements and fonts). The ones
+-- that are switched off get unloaded on the first frame (hub.set(id, false)), their elements hidden.
+function M.preload(skip)
+    local ok, failed = 0, 0
+    for _, e in ipairs(index or {}) do
+        if not (skip and skip[e.id]) then
+            run(e)
+            if running[e.id].failed then failed = failed + 1 else ok = ok + 1 end
+        end
+    end
+    loader.log(("scripts set up: %d, failed: %d"):format(ok, failed))
 end
 
 function M.set(id, on)
