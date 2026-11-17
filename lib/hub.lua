@@ -5,12 +5,12 @@
 --   callbacks / events  -> its own owner in lib/callbacks (one real Astral callback per event for everyone)
 --   ui                  -> the same Astral ui, but every element it creates is recorded
 --   require("json"/"base64"/"msgpack") -> the libraries from the Scripts repo
--- Switching a script off pauses its callbacks and hides its menu elements; on again resumes and shows them (Astral
--- can't delete elements, so a script runs once per load and is never re-run: no duplicate elements).
+-- Switching a script off unloads it the way Astral does (its shutdown callbacks run, its callbacks and events go) and
+-- hides its menu elements; on again runs it fresh, getting its old elements back (Astral can't delete elements).
 --
 --   local hub = import("lib.hub")
 --   hub.list()        -> the scripts (id, title, author, thread), nil + why when there is no token / no index
---   hub.set(id, on)   -> load (first time) or pause / resume one
+--   hub.set(id, on)   -> run it, or unload it
 
 local cb = import("lib.callbacks")
 
@@ -20,7 +20,7 @@ local LIBRARIES = {json = "json", base64 = "base64", msgpack = "msgpack"}
 
 local M = {}
 local token, index, why
-local running = {}  -- id -> {env, elements, on, failed}
+local running = {}  -- id -> {env, elements, reuse, on, failed}
 local libs = {}
 
 local function read_token()
@@ -52,28 +52,49 @@ local function library(name)
     return libs[name]
 end
 
--- the sandbox's ui: Astral's, with every element a script adds (on a container or on ui itself) recorded
-local function ui_for(elements)
-    local function track(el)
-        if el ~= nil then elements[#elements + 1] = el end
+-- the sandbox's ui: Astral's, with every element a script adds (on a container or on ui itself) recorded. Astral can't
+-- delete elements, so a re-run gets back the element it made last time (same container, kind, name) instead of a copy.
+local function ui_for(state)
+    local function track(key, make)
+        local el = state.reuse[key]
+        if el ~= nil then
+            pcall(function() el:set_visibility(true) end)
+        else
+            el = make()
+            if el == nil then return nil end
+            state.reuse[key] = el
+        end
+        state.elements[#state.elements + 1] = el
         return el
     end
-    local function container(real)
+    local function container(real, ckey)
         return setmetatable({}, {__index = function(_, k)
             local v = real[k]
             if type(v) ~= "function" then return v end
-            if tostring(k):find("^add_") then return function(_, ...) return track(v(real, ...)) end end
+            if tostring(k):find("^add_") then
+                return function(_, ...)
+                    local args = {...}
+                    return track(ckey .. "|" .. k .. "|" .. tostring(args[1]), function() return v(real, (table.unpack or unpack)(args)) end)
+                end
+            end
             return function(_, ...) return v(real, ...) end
         end})
     end
     return setmetatable({
         find_container = function(...)
             local c = ui.find_container(...)
-            return c and container(c) or c
+            local parts = {}
+            for i, a in ipairs({...}) do parts[i] = tostring(a) end
+            return c and container(c, table.concat(parts, "/")) or c
         end,
     }, {__index = function(_, k)
         local v = ui[k]
-        if type(v) == "function" and tostring(k):find("^add_") then return function(...) return track(v(...)) end end
+        if type(v) == "function" and tostring(k):find("^add_") then
+            return function(...)
+                local args = {...}
+                return track("ui|" .. k .. "|" .. tostring(args[1]), function() return v((table.unpack or unpack)(args)) end)
+            end
+        end
         return v
     end})
 end
@@ -83,18 +104,19 @@ local function show(elements, on)
 end
 
 local function run(entry)
-    local state = {elements = {}, on = true}
+    local state = running[entry.id] or {reuse = {}}
     running[entry.id] = state
+    state.elements, state.on, state.failed = {}, true, nil
     local src, err = fetch("scripts/" .. entry.id .. ".lua")
     if not src then
-        state.failed = err
+        state.failed, state.on = err, false
         return loader.log(("script %s: can't download (%s)"):format(entry.id, err))
     end
     local env = setmetatable({}, {__index = _G})
     env._G = env
     env.callbacks = cb.callbacks_for(entry.id)
     env.events = cb.events_for(entry.id)
-    env.ui = ui_for(state.elements)
+    env.ui = ui_for(state)
     env.require = function(name)
         if LIBRARIES[name] then return library(name) end
         return require(name)
@@ -102,13 +124,13 @@ local function run(entry)
     state.env = env
     local chunk, cerr = load(src, "=" .. entry.id .. ".lua", "t", env)
     if not chunk then
-        state.failed = cerr
+        state.failed, state.on = cerr, false
         return loader.log(("script %s: %s"):format(entry.id, cerr))
     end
     local ok, rerr = pcall(chunk)
     if not ok then
-        state.failed = tostring(rerr)
-        cb.pause(entry.id, true)  -- whatever it registered before failing stays off
+        state.failed, state.on = tostring(rerr), false
+        cb.unload(entry.id)  -- whatever it set up before failing is undone
         show(state.elements, false)
         return loader.log(("script %s failed: %s"):format(entry.id, tostring(rerr)))
     end
@@ -149,10 +171,11 @@ function M.set(id, on)
         if on then run(entry) end
         return
     end
-    if state.failed or state.on == on then return end
-    state.on = on
-    cb.pause(id, not on)
-    show(state.elements, on)
+    if state.on == on then return end
+    if on then return run(entry) end  -- fresh, as when Astral loads it (a failed one gets another try)
+    state.on = false
+    cb.unload(id)  -- its shutdown callbacks undo what it changed, then its callbacks and events go
+    show(state.elements, false)
 end
 
 function M.state(id)

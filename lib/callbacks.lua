@@ -35,6 +35,19 @@ local function fanout(real_add, what)
         end
         list[#list + 1] = {fn = fn, owner = owner}
     end
+    local function fire(owner, name, ...)  -- that owner's functions for name, now (paused or not)
+        for _, e in ipairs(lists[name] or {}) do
+            if e.owner == owner then
+                local ok, r = pcall(e.fn, ...)
+                if not ok then loader.log(("%s %s (%s): %s"):format(what, name, owner, tostring(r))) end
+            end
+        end
+    end
+    local function clear(owner)  -- every function of that owner, under every name
+        for _, list in pairs(lists) do
+            for i = #list, 1, -1 do if list[i].owner == owner then table.remove(list, i) end end
+        end
+    end
     local function remove(owner, name, fn)
         local list = lists[name]
         if not list then return end
@@ -42,15 +55,15 @@ local function fanout(real_add, what)
             if list[i].owner == owner and (fn == nil or list[i].fn == fn) then table.remove(list, i) end
         end
     end
-    return add, remove
+    return add, remove, fire, clear
 end
 
 local real_callbacks = callbacks
-local cb_add, cb_remove = fanout(function(n, f) real_callbacks.add(n, f) end, "callback")
+local cb_add, cb_remove, cb_fire, cb_clear = fanout(function(n, f) real_callbacks.add(n, f) end, "callback")
 local real_events = rawget(_G, "events")
-local ev_add, ev_remove
+local ev_add, ev_remove, ev_clear
 if type(real_events) == "table" or type(real_events) == "userdata" then
-    ev_add, ev_remove = fanout(function(n, f) real_events.add(n, f) end, "event")
+    ev_add, ev_remove, _, ev_clear = fanout(function(n, f) real_events.add(n, f) end, "event")
 end
 
 local function scoped(real, add, remove, owner)
@@ -66,6 +79,13 @@ function M.events_for(owner)
     return scoped(real_events, ev_add, ev_remove, owner)
 end
 function M.pause(owner, on) paused[owner] = on or nil end
+-- unload: that owner's shutdown callbacks (scripts undo their cvars / hooks there), then all its callbacks and events go
+function M.unload(owner)
+    cb_fire(owner, "shutdown")
+    cb_clear(owner)
+    if ev_clear then ev_clear(owner) end
+    paused[owner] = nil
+end
 
 -- the loader's own modules: the global callbacks / events become the "loader" owner's
 callbacks = M.callbacks_for("loader")
